@@ -4,115 +4,128 @@ import 'dart:async';
 import 'terminal_service.dart';
 import 'controllabels.dart';
 
-class ConexionSocket {
+class ConnectionSocket {
   
   final String host;
   final int puerto;
-  late Socket socket;
-  bool success = false;
-  int maxRetries;
+  final StreamController<String> _rxController = StreamController.broadcast();
+  Socket? _socket;
   int attempts = 0;
   Duration timeoutDuration;
-  Stream<List<int>>? _socketStream;
-  StreamSubscription<List<int>>? _socketStreamSubscription;
   final eol = "\r\n";
+  bool connected = false;
+  int backoffDuration = 1; // Start whit 1 sec
   
-  ConexionSocket(this.host, this.puerto, {
-    this.maxRetries = 10, 
-    this.timeoutDuration = const Duration(seconds: 2), 
-    this.success=false,
+  ConnectionSocket(this.host, this.puerto, {
+    this.timeoutDuration = const Duration(seconds: 5), 
   });
     
   //Connect -----------------------------------------   
   Future<void> connect() async {
-    while ((attempts < maxRetries)) {
-      try {
-        
-        socket = await Socket.connect(host, puerto, timeout: timeoutDuration);
-        printRed('Connected to $host:$puerto');
-        success=true;
-        _socketStream = socket.asBroadcastStream();
-        _socketStreamSubscription = _socketStream!.listen((_){});
-        //print("code: ${_socketStream.hashCode.toString()}");
-        processStream(_socketStream!);
-        break;
-
-      } on TimeoutException {
-        success=false;
-        print('TimeoutExeption Error...');
-      } on SocketException {
-          success=false;
-          print('SocketException Error....');
-      }
-
-      attempts++;
-      printGreen('nº attempts: $attempts');
-      if (attempts >= maxRetries) {
-        print('number of attempts reached.');
-        socket.close();
-        exit(-1);
-      }
-      await Future.delayed(Duration(seconds: 2));
-    }
+    try {
+      
+      _socket = await Socket.connect(host, puerto, timeout: timeoutDuration);
+      connected=true;
+      
+      processStream(_socket!);
+      printRed('Connected to $host:$puerto');
+      
+    } on TimeoutException catch(e) {
+      printRed("Timeout Error");
+      _rxController.addError(e);
+      //throw 'TimeoutExeption Error...';
+      
+    } on SocketException catch(e) {
+      printRed("SocketException Error");
+      _rxController.addError(e);
+      //exit(-1);
+      //throw 'SocketException Error....';
+      
+     } catch (e) {
+      _rxController.addError(e);
+      //throw 'unexpected error: $e';
+    } 
   }
 
-  // Send data -----------------------------------
-  bool  sendData(String message) {
-    if (!success) {
-      print('not active connetión.');
-      return false;
-    }
-    socket.write(message);
-    printRed('TX: ${message.trim()}'); 
-    return true;
+  // Send data ---------------------------------
+  void sendData(String message) {
+    if (connected) {
+       _socket?.write(message);
+      //printRed('TX: ${message.trim()}'); 
+      return;
+    } 
+    printRed('not active connetión.');
   }
 
   // Close conecction-------------------------
   void close() async { 
-      socket.flush();
-      await socket.close();
-      socket.destroy();
-      success=false;
-      print('close connetion.');
+      _rxController.close();
+      _socket?.destroy();
+      _socket?.close();
+      //connected=false;
   }
 
-  //Reconecc -----------------------
-  Future <void> reconnect() async{
-    print('trying to reconnect...$attempts');
-    attempts = 0;
-    await connect();
+  //Reconnect -------------------------------
+  Future<void> reconnect() async {
+    printRed('reconnecting...');
+    connected=false;
+    attempts++;
+    try {
+      backoffDuration *= 2; // Doubling the time between attempts
+       printGreen('attemps $attempts in $backoffDuration sec' );
+      await Future.delayed(Duration(seconds: backoffDuration));
+      await connect();
+    } catch (e) {
+      print('reconnectión error: $e');
   }
+}
 
-  //Process socket-------------------------------------------
-  Future<void> processStream(Stream<List<int>> stream ) async {
+  //Process _socket-------------------------------------------
+  Future<void> processStream(Socket stream ) async {
     StringBuffer buffer = StringBuffer();
    try {
       await for (var chunk in stream ) {
+        connected=true;
       var chunkString = String.fromCharCodes(chunk);
       if (!chunkString.contains(eol)) {
-        printGreen("RX: ${ControlLabels.labels[chunkString.codeUnits[0]]}");
+        //printGreen("RX: ${ControlLabels.labels[chunkString.codeUnits[0]]}");
+         _rxController.add( ControlLabels.labels[chunkString.codeUnits[0]]!); // Enviar datos recibidos 
+        buffer.clear();   
       } 
       buffer.write(chunkString);
       while (buffer.toString().contains(eol)) {
         var line = _extractLine(buffer);
-        printGreen('RX: $line');
+         _rxController.add(line);
+        //printGreen('RX: $line');
       }  
     } 
    } //try
-    catch (e){
-      success = false;
-      print('No network connection error: $e');
-      exit(-1);
+   on SocketException catch(e) {
+    if (e.osError != null && e.osError!.errorCode == 121) {
+      printRed('timeout in the network OS: ${e.message}');
+    } else {
+      printRed('Error OS: ${e.message}');
+    }
+    _rxController.addError(e);
+    //exit(-1);
+   }
+    catch (error){
+      _rxController.addError(error);
+      _socket?.destroy();
+      connected = false;
+      //throw "Not network connection error: $error";
     }
     finally {
-      success = false;
-      printGreen("processStream client error reconeccting in 2 sec");
-      _socketStreamSubscription!.cancel();
-      socket.destroy();
-      await Future.delayed(Duration(seconds:2));
-      reconnect();
+      _socket?.destroy();
+      _socket?.close();
+      connected=false;
+      _rxController.addError(Error());
+      //throw "finally in socket processStream";
     }
   }
+
+  //TODO: Periodic heartbeat
+  
 
   // Extracc line----------------------------------------
   String _extractLine(StringBuffer buffer) {
@@ -123,4 +136,8 @@ class ConexionSocket {
     buffer.write(rest);
     return line;
   }
+
+  /// return stream whit data receibed
+  Stream<String> get onData => _rxController.stream;
+
 }
