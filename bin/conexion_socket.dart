@@ -12,7 +12,7 @@ class ConnectionSocket {
   Socket? _socket;
   int attempts = 0;
   Duration timeoutDuration;
-  final eol = "\r\n";
+  final eol = "\r";  // can be "\r\n"
   bool connected = false;
   int backoffDuration = 1; // Start whit 1 sec
   
@@ -88,7 +88,7 @@ class ConnectionSocket {
         connected=true;
       var chunkString = String.fromCharCodes(chunk);
       if (!chunkString.contains(eol)) {
-        //printGreen("RX: ${ControlLabels.labels[chunkString.codeUnits[0]]}");
+        //printGreen("RX--: ${ControlLabels.labels[chunkString.codeUnits[0]]}");
          _rxController.add( ControlLabels.labels[chunkString.codeUnits[0]]!); // Enviar datos recibidos 
         buffer.clear();   
       } 
@@ -131,7 +131,7 @@ class ConnectionSocket {
   String _extractLine(StringBuffer buffer) {
     int index = buffer.toString().indexOf(eol);
     String line = buffer.toString().substring(0, index);
-    String rest=buffer.toString().substring(index +2);
+    String rest=buffer.toString().substring(index + eol.length);
     buffer.clear();
     buffer.write(rest);
     return line;
